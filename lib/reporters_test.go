@@ -1,25 +1,30 @@
 package vegeta
 
 import (
+	"io/ioutil"
 	"testing"
 	"time"
 )
 
-func BenchmarkReportPlot(b *testing.B) {
+func BenchmarkPlotReporter(b *testing.B) {
 	b.StopTimer()
 	// Build result set
-	results := make([]Result, 50000)
-	for began, i := time.Now(), 0; i < len(results); i++ {
-		results[i].Code = uint16(i % 600)
-		results[i].Latency = 50 * time.Millisecond
-		results[i].Timestamp = began.Add(time.Duration(i) * 50 * time.Millisecond)
+	rs := make(Results, 50000)
+	for began, i := time.Now(), 0; i < 50000; i++ {
+		rs[i] = Result{
+			Code:      uint16(i % 600),
+			Latency:   50 * time.Millisecond,
+			Timestamp: began.Add(time.Duration(i) * 50 * time.Millisecond),
+		}
 		if i%5 == 0 {
-			results[i].Error = "Error"
+			rs[i].Error = "Error"
 		}
 	}
+	rep := NewPlotReporter("Vegeta Plot", &rs)
 	// Start benchmark
+	b.ReportAllocs()
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
-		ReportPlot(results, "")
+		rep.Report(ioutil.Discard)
 	}
 }

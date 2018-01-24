@@ -1,61 +1,78 @@
 package vegeta
 
 import (
-	"net/http"
+	"reflect"
 	"testing"
 	"time"
 )
 
-func TestNewMetrics(t *testing.T) {
-	m := NewMetrics([]Result{
-		Result{500, time.Unix(0, 0), 100 * time.Millisecond, "http://localhost", http.Header{"Testheader": {"foo"}}, 10, 30, "Internal server error"},
-		Result{200, time.Unix(1, 0), 20 * time.Millisecond, "http://localhost", http.Header{"Testheader": {"bar"}}, 20, 20, ""},
-		Result{200, time.Unix(2, 0), 30 * time.Millisecond, "http://localhost", http.Header{"Testheader": {"foo"}}, 30, 10, ""},
-	}, "Testheader")
+func TestMetrics_Add(t *testing.T) {
+	t.Parallel()
 
-	for field, values := range map[string][]float64{
-		"BytesIn.Mean":  []float64{m.BytesIn.Mean, 20.0},
-		"BytesOut.Mean": []float64{m.BytesOut.Mean, 20.0},
-		"Sucess":        []float64{m.Success, 0.6666666666666666},
-	} {
-		if values[0] != values[1] {
-			t.Errorf("%s: want: %f, got: %f", field, values[1], values[0])
+	codes := []uint16{500, 200, 302}
+	errors := []string{"Internal server error", ""}
+
+	var got Metrics
+	for i := 1; i <= 10000; i++ {
+		got.Add(&Result{
+			Code:      codes[i%len(codes)],
+			Timestamp: time.Unix(int64(i-1), 0),
+			Latency:   time.Duration(i) * time.Microsecond,
+			BytesIn:   1024,
+			BytesOut:  512,
+			Error:     errors[i%len(errors)],
+		})
+	}
+	got.Close()
+
+	duration := func(s string) time.Duration {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			panic(err)
 		}
+		return d
 	}
 
-	for field, values := range map[string][]time.Duration{
-		"Latencies.Max":  []time.Duration{m.Latencies.Max, 100 * time.Millisecond},
-		"Latencies.Mean": []time.Duration{m.Latencies.Mean, 50 * time.Millisecond},
-		"Latencies.P50":  []time.Duration{m.Latencies.P50, 20 * time.Millisecond},
-		"Latencies.P95":  []time.Duration{m.Latencies.P95, 30 * time.Millisecond},
-		"Latencies.P99":  []time.Duration{m.Latencies.P99, 30 * time.Millisecond},
-		"Duration":       []time.Duration{m.Duration, 2 * time.Second},
-	} {
-		if values[0] != values[1] {
-			t.Errorf("%s: want: %s, got: %s", field, values[1], values[0])
-		}
+	want := Metrics{
+		Latencies: LatencyMetrics{
+			Total: duration("50.005s"),
+			Mean:  duration("5.0005ms"),
+			P50:   duration("4.991ms"),
+			P95:   duration("9.509ms"),
+			P99:   duration("9.898ms"),
+			Max:   duration("10ms"),
+		},
+		BytesIn:     ByteMetrics{Total: 10240000, Mean: 1024},
+		BytesOut:    ByteMetrics{Total: 5120000, Mean: 512},
+		Earliest:    time.Unix(0, 0),
+		Latest:      time.Unix(9999, 0),
+		End:         time.Unix(9999, 0).Add(10000 * time.Microsecond),
+		Duration:    duration("2h46m39s"),
+		Wait:        duration("10ms"),
+		Requests:    10000,
+		Rate:        1.000100010001,
+		Success:     0.6667,
+		StatusCodes: map[string]int{"500": 3333, "200": 3334, "302": 3333},
+		Errors:      []string{"Internal server error"},
+
+		errors:    got.errors,
+		success:   got.success,
+		latencies: got.latencies,
 	}
 
-	for field, values := range map[string][]uint64{
-		"BytesOut.Total": []uint64{m.BytesOut.Total, 60},
-		"BytesIn.Total":  []uint64{m.BytesIn.Total, 60},
-		"Requests":       []uint64{m.Requests, 3},
-	} {
-		if values[0] != values[1] {
-			t.Errorf("%s: want: %d, got: %d", field, values[1], values[0])
-		}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("\ngot:  %+v\nwant: %+v", got, want)
 	}
+}
 
-	if len(m.Headers) != 2 || m.Headers["foo"] != 2 || m.Headers["bar"] != 1 {
-		t.Errorf("Headers: want: %v, got: %v", map[string]int{"foo": 2, "bar": 1}, m.Headers)
-	}
+// https://github.com/tsenart/vegeta/issues/208
+func TestMetrics_NoInfiniteRate(t *testing.T) {
+	t.Parallel()
 
-	if len(m.StatusCodes) != 2 || m.StatusCodes["200"] != 2 || m.StatusCodes["500"] != 1 {
-		t.Errorf("StatusCodes: want: %v, got: %v", map[int]int{200: 2, 500: 1}, m.StatusCodes)
-	}
+	m := Metrics{Requests: 1, Duration: time.Microsecond}
+	m.Close()
 
-	err := "Internal server error"
-	if len(m.Errors) != 1 || m.Errors[0] != err {
-		t.Errorf("Errors: want: %v, got: %v", []string{err}, m.Errors)
+	if got, want := m.Rate, 1.0; got != want {
+		t.Errorf("got rate %f, want %f", got, want)
 	}
 }
